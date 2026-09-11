@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  aether-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aether_analytics_app
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://aether_user:aether_secret_pass@postgres:5432/aether_db?schema=public
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=aether_jwt_production_secret_key_change_me
+      - API_KEY_SECRET=aether_api_salt_secret_change_me
+      - FRONTEND_URL=http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aether-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: aether_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: aether_user
+      POSTGRES_PASSWORD: aether_secret_pass
+      POSTGRES_DB: aether_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - aether_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether_user -d aether_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aether-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: aether_redis
+    restart: always
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - aether_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aether-net
+
+volumes:
+  aether_pgdata:
+  aether_redisdata:
+
+networks:
+  aether-net:
+    driver: bridge

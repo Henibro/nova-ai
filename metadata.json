@@ -1,6 +1,6 @@
 {
   "name": "Nova AI",
-  "description": "All-in-one intelligent workspace with AI chat, smart documents, project management, file intelligence, tasks, and specialized AI agents.",
+  "description": "Aether Analytics - Privacy-first telemetry and product analytics platform with real-time WebSocket streaming, Core Web Vitals, and interactive charts.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,0 +1,275 @@
+// Prisma Schema for Aether Analytics
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum DeviceType {
+  DESKTOP
+  MOBILE
+  TABLET
+}
+
+enum AlertCondition {
+  GT
+  LT
+  GTE
+  LTE
+}
+
+model User {
+  id           String          @id @default(cuid())
+  email        String          @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  memberships  ProjectMember[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Project {
+  id                  String               @id @default(cuid())
+  name                String
+  domain              String
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  members             ProjectMember[]
+  apiKeys             APIKey[]
+  events              Event[]
+  sessions            Session[]
+  visitors            AnonymousVisitor[]
+  pages               Page[]
+  funnels             Funnel[]
+  alerts              Alert[]
+  performanceMetrics  PerformanceMetric[]
+  retentionPolicy     DataRetentionPolicy?
+  dashboardSettings   DashboardSettings?
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  role      Role     @default(ANALYST)
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model APIKey {
+  id        String    @id @default(cuid())
+  projectId String
+  keyHash   String    @unique
+  name      String    @default("Default Live Key")
+  prefix    String
+  createdAt DateTime  @default(now())
+  lastUsed  DateTime?
+  revokedAt DateTime?
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("api_keys")
+}
+
+model AnonymousVisitor {
+  id          String    @id @default(cuid())
+  projectId   String
+  visitorHash String    // salted daily rotating one-way hash
+  firstSeen   DateTime  @default(now())
+  lastSeen    DateTime  @updatedAt
+  deviceType  DeviceType @default(DESKTOP)
+  browser     String
+  os          String
+  country     String?
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sessions    Session[]
+  events      Event[]
+
+  @@unique([projectId, visitorHash])
+  @@index([projectId, lastSeen])
+  @@map("anonymous_visitors")
+}
+
+model Session {
+  id          String           @id @default(cuid())
+  projectId   String
+  visitorId   String
+  sessionHash String
+  startedAt   DateTime         @default(now())
+  endedAt     DateTime?
+  durationSec Int              @default(0)
+  pageCount   Int              @default(1)
+  entryPage   String
+  exitPage    String?
+  referrer    String?
+  isBounce    Boolean          @default(true)
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  visitor     AnonymousVisitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  events      Event[]
+
+  @@index([projectId, startedAt])
+  @@index([sessionHash])
+  @@map("sessions")
+}
+
+model Event {
+  id          String            @id @default(cuid())
+  projectId   String
+  sessionId   String?
+  visitorId   String?
+  eventName   String
+  pageUrl     String
+  referrer    String?
+  deviceType  DeviceType        @default(DESKTOP)
+  browser     String
+  os          String
+  country     String?
+  region      String?
+  properties  Json              @default("{}")
+  timestamp   DateTime          @default(now())
+  project     Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  session     Session?          @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  visitor     AnonymousVisitor? @relation(fields: [visitorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, timestamp])
+  @@index([projectId, eventName])
+  @@index([pageUrl])
+  @@map("events")
+}
+
+model Page {
+  id        String   @id @default(cuid())
+  projectId String
+  path      String
+  title     String?
+  views     Int      @default(0)
+  visitors  Int      @default(0)
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, path])
+  @@map("pages")
+}
+
+model Funnel {
+  id          String       @id @default(cuid())
+  projectId   String
+  name        String
+  description String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  steps       FunnelStep[]
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("funnels")
+}
+
+model FunnelStep {
+  id        String  @id @default(cuid())
+  funnelId  String
+  stepOrder Int
+  name      String
+  targetUrl String?
+  eventName String?
+  funnel    Funnel  @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+
+  @@map("funnel_steps")
+}
+
+model Alert {
+  id                 String         @id @default(cuid())
+  projectId          String
+  name               String
+  metric             String
+  condition          AlertCondition
+  threshold          Float
+  timeWindowMin      Int            @default(15)
+  notificationMethod String         @default("dashboard")
+  enabled            Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  history            AlertHistory[]
+
+  @@map("alerts")
+}
+
+model AlertHistory {
+  id           String   @id @default(cuid())
+  alertId      String
+  triggeredAt  DateTime @default(now())
+  currentValue Float
+  threshold    Float
+  resolvedAt   DateTime?
+  alert        Alert    @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@map("alert_history")
+}
+
+model PerformanceMetric {
+  id        String   @id @default(cuid())
+  projectId String
+  metric    String   // LCP, INP, CLS, FCP, TTFB
+  value     Float
+  rating    String   // good, needs-improvement, poor
+  pageUrl   String
+  timestamp DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, metric, timestamp])
+  @@map("performance_metrics")
+}
+
+model DataRetentionPolicy {
+  id                 String   @id @default(cuid())
+  projectId          String   @unique
+  retentionDays      Int      @default(90)
+  anonymizeRawIp     Boolean  @default(true)
+  cookieFreeTracking Boolean  @default(true)
+  honorDNT           Boolean  @default(true)
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("data_retention_policies")
+}
+
+model DashboardSettings {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  widgets   Json     @default("[]")
+  layout    Json     @default("{}")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("dashboard_settings")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  resource  String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}

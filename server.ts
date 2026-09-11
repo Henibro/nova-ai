@@ -1,18 +1,26 @@
 import express from "express";
+import http from "http";
 import path from "path";
-import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
+import { websocketService } from "./src/server/websocketService";
+import { telemetryService } from "./src/server/telemetryService";
+import { analyticsService } from "./src/server/analyticsService";
+import { alertService } from "./src/server/alertService";
+
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const distPath = path.join(process.cwd(), "dist");
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const server = http.createServer(app);
+
+  // Initialize WebSocket server on /ws
+  websocketService.init(server);
 
   app.use(express.json({ limit: "25mb" }));
 
@@ -265,6 +273,189 @@ Provide a concise, intelligent synthesis answering the user's question, citing t
     });
   });
 
+  // ==========================================
+  // AETHER ANALYTICS TELEMETRY & API ENDPOINTS
+  // ==========================================
+
+  // POST /api/events - Ingest telemetry event
+  app.post("/api/events", (req, res) => {
+    const rawIp = (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress;
+    const userAgent = req.headers["user-agent"];
+    const dnt = req.headers["dnt"] === "1" || req.headers["dnt"] === "yes";
+
+    const event = telemetryService.ingest({
+      ...req.body,
+      ip: rawIp,
+      userAgent,
+      dnt,
+    });
+
+    if (!event) {
+      return res.status(200).json({ status: "ignored_or_dnt" });
+    }
+
+    res.status(201).json({ status: "accepted", eventId: event.id });
+  });
+
+  // GET /api/analytics/overview - Topline KPI metrics & timeseries
+  app.get("/api/analytics/overview", (req, res) => {
+    const { projectId, dateRange = "last_7_days" } = req.query;
+    const metrics = analyticsService.getOverviewMetrics(projectId as string, dateRange as string);
+    const timeSeries = analyticsService.getTimeSeries(dateRange as string);
+    res.json({ metrics, timeSeries });
+  });
+
+  // GET /api/analytics/realtime - Live telemetry snapshot
+  app.get("/api/analytics/realtime", (req, res) => {
+    const { projectId } = req.query;
+    const realtime = telemetryService.getRealtimeState(projectId as string);
+    res.json(realtime);
+  });
+
+  // GET /api/analytics/events - Event stream & inspection
+  app.get("/api/analytics/events", (req, res) => {
+    const { projectId, limit = 50 } = req.query;
+    const events = telemetryService.getRecentEvents(projectId as string, Number(limit));
+    res.json({ events, total: events.length });
+  });
+
+  // GET /api/analytics/pages - Top pages
+  app.get("/api/analytics/pages", (req, res) => {
+    res.json({ pages: analyticsService.getTopPages() });
+  });
+
+  // GET /api/analytics/referrers - Referrers
+  app.get("/api/analytics/referrers", (req, res) => {
+    res.json({ referrers: analyticsService.getReferrers() });
+  });
+
+  // GET /api/analytics/devices - Device distribution
+  app.get("/api/analytics/devices", (req, res) => {
+    res.json({ devices: analyticsService.getDeviceBreakdown() });
+  });
+
+  // GET /api/analytics/browsers - Browser distribution
+  app.get("/api/analytics/browsers", (req, res) => {
+    res.json({ browsers: analyticsService.getBrowserBreakdown() });
+  });
+
+  // GET /api/analytics/os - Operating system distribution
+  app.get("/api/analytics/os", (req, res) => {
+    res.json({ os: analyticsService.getOSBreakdown() });
+  });
+
+  // GET /api/analytics/countries - Country distribution
+  app.get("/api/analytics/countries", (req, res) => {
+    res.json({ countries: analyticsService.getCountryBreakdown() });
+  });
+
+  // GET /api/analytics/funnels - Conversion funnels
+  app.get("/api/analytics/funnels", (req, res) => {
+    res.json({ funnels: analyticsService.getFunnels() });
+  });
+
+  // POST /api/funnels - Create custom funnel
+  app.post("/api/funnels", (req, res) => {
+    const { name, description, steps } = req.body;
+    const funnels = analyticsService.getFunnels();
+    const newFunnel = {
+      id: `funnel_${Date.now()}`,
+      projectId: "project_aether_demo",
+      name: name || "New Conversion Funnel",
+      description: description || "Custom product funnel",
+      createdAt: new Date().toISOString(),
+      steps: steps || [],
+      overallConversion: 12.4,
+      totalStarted: 5000,
+      totalCompleted: 620,
+    };
+    funnels.push(newFunnel as any);
+    res.status(201).json(newFunnel);
+  });
+
+  // GET /api/analytics/performance - Core Web Vitals
+  app.get("/api/analytics/performance", (req, res) => {
+    res.json({ vitals: analyticsService.getWebVitals() });
+  });
+
+  // GET /api/alerts - Alerts and history logs
+  app.get("/api/alerts", (req, res) => {
+    const { projectId } = req.query;
+    res.json({
+      alerts: alertService.getAlerts(projectId as string),
+      history: alertService.getHistory(),
+    });
+  });
+
+  // POST /api/alerts - Create new alert
+  app.post("/api/alerts", (req, res) => {
+    const created = alertService.createAlert(req.body);
+    res.status(201).json(created);
+  });
+
+  // POST /api/alerts/:id/toggle - Toggle alert status
+  app.post("/api/alerts/:id/toggle", (req, res) => {
+    const updated = alertService.toggleAlert(req.params.id);
+    if (!updated) return res.status(404).json({ error: "Alert not found" });
+    res.json(updated);
+  });
+
+  // POST /api/alerts/:id/test - Trigger simulated alert test
+  app.post("/api/alerts/:id/test", (req, res) => {
+    const testLog = alertService.triggerTestAlert(req.params.id);
+    res.json({ status: "triggered", log: testLog });
+  });
+
+  // DELETE /api/alerts/:id - Delete alert
+  app.delete("/api/alerts/:id", (req, res) => {
+    const deleted = alertService.deleteAlert(req.params.id);
+    res.json({ success: deleted });
+  });
+
+  // GET /api/projects - Projects list
+  app.get("/api/projects", (req, res) => {
+    res.json({ projects: analyticsService.getProjects() });
+  });
+
+  // POST /api/projects - Create project
+  app.post("/api/projects", (req, res) => {
+    const { name, domain } = req.body;
+    const newProject = {
+      id: `project_${Math.random().toString(36).substring(2, 9)}`,
+      name: name || "New Project",
+      domain: domain || "example.com",
+      apiKey: `aether_live_${Math.random().toString(36).substring(2, 18)}`,
+      createdAt: new Date().toISOString(),
+      retentionDays: 90,
+      ipAnonymization: true,
+      cookieFree: true,
+      honorDNT: true,
+      totalEvents: 0,
+    };
+    res.status(201).json(newProject);
+  });
+
+  // POST /api/export - Export telemetry data
+  app.post("/api/export", (req, res) => {
+    const { format = "json" } = req.body;
+    const events = telemetryService.getRecentEvents("all", 100);
+
+    if (format === "csv") {
+      const headers = "id,timestamp,eventName,pageUrl,deviceType,browser,country\n";
+      const rows = events
+        .map(
+          (e) =>
+            `"${e.id}","${e.timestamp}","${e.eventName}","${e.pageUrl}","${e.deviceType}","${e.browser}","${e.country}"`
+        )
+        .join("\n");
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", 'attachment; filename="aether_analytics_export.csv"');
+      return res.send(headers + rows);
+    }
+
+    res.json({ exportedAt: new Date().toISOString(), events });
+  });
+
   // Vite middleware in dev or static files in production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -280,8 +471,8 @@ Provide a concise, intelligent synthesis answering the user's question, citing t
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Nova AI Server running on http://0.0.0.0:${PORT}`);
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Aether Analytics Server running on http://0.0.0.0:${PORT} with WebSocket on /ws`);
   });
 }
 
